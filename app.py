@@ -95,9 +95,11 @@ def load_file_from_drive(file_name, file_type='excel', sheet_name=None, skiprows
         if file_type == 'excel':
             df = pd.read_excel(fh, sheet_name=sheet_name, skiprows=skiprows, engine='openpyxl')
         else:
-            df = pd.read_csv(fh)
+            # 💡 핵심 1: CSV 읽을 때 인코딩을 맞춰서 투명 마커(BOM)를 1차로 제거
+            df = pd.read_csv(fh, encoding='utf-8-sig')
         
-        df.columns = df.columns.astype(str).str.replace(r'\s+', '', regex=True) 
+        # 💡 핵심 2: 혹시나 남아있을지 모를 공백이나 이상한 특수문자 완벽 제거
+        df.columns = df.columns.astype(str).str.replace(r'\s+', '', regex=True).str.replace('\ufeff', '') 
         return df
     except:
         return None

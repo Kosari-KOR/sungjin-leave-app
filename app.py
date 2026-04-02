@@ -9,12 +9,13 @@ from datetime import datetime
 import math
 
 # ==========================================
-# 1. 디자인 및 스타일 설정 (Toss 앱 감성 유지)
+# 1. 디자인 및 스타일 설정 (Toss 앱 감성)
 # ==========================================
 st.set_page_config(page_title="성진정밀 연차관리", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
+    /* 🚫 Streamlit 기본 워터마크 완벽 숨기기 */
     header { visibility: hidden !important; display: none !important; }
     [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; }
     footer { visibility: hidden !important; display: none !important; }
@@ -25,7 +26,6 @@ st.markdown("""
     .block-container { padding-top: 3.5rem !important; padding-bottom: 2rem !important; }
     
     .toss-card { background-color: #ffffff; border-radius: 20px; padding: 24px 20px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.02); }
-    .admin-box { background-color: #f9fafb; border: 1px solid #e5e8eb; border-radius: 12px; padding: 15px; margin-bottom: 15px; }
 
     .title-text { font-size: 1.3rem !important; font-weight: 800; color: #191f28; line-height: 1.4; word-break: keep-all; }
     .title-text.gray { color: #505967; font-weight: 600; font-size: 1.1rem !important; margin-top: 6px; }
@@ -38,11 +38,16 @@ st.markdown("""
     .progress-bg { background-color: #f2f4f6; border-radius: 10px; height: 14px; width: 100%; margin: 5px 0 20px 0; }
     .progress-fill { background-color: #3182f6; height: 100%; border-radius: 10px; }
 
-    .metric-wrapper { display: flex; gap: 10px; margin-bottom: 5px; }
-    .metric-card { background-color: #f9fafb; border-radius: 12px; padding: 14px 0; flex: 1; text-align: center; }
+    /* 💡 Streamlit Native Columns를 토스 카드로 변신시키는 마법의 CSS */
+    div[data-testid="column"] { background-color: #f9fafb; border-radius: 12px; padding: 14px 0; text-align: center; }
     .metric-label { font-size: 0.85rem; font-weight: 600; color: #6b7684; margin-bottom: 4px; }
     .metric-value { font-size: 1.3rem; font-weight: 800; color: #191f28; }
     .metric-value.blue { color: #3182f6; }
+    
+    /* 관리자용 총연차 입력창 디자인 */
+    div[data-testid="stNumberInput"] { width: 85%; margin: 0 auto; margin-top: -5px; }
+    div[data-baseweb="input"] { background-color: #ffffff !important; border: 1.5px solid #3182f6 !important; }
+    div[data-baseweb="input"] input { font-size: 1.2rem !important; font-weight: 800 !important; color: #3182f6 !important; text-align: center !important; padding: 5px !important;}
 
     .history-row { display: flex; align-items: center; border-bottom: 1px solid #f2f4f6; padding: 16px 4px; }
     .history-row:last-child { border-bottom: none; padding-bottom: 0; }
@@ -56,10 +61,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 구글 드라이브 연결 및 데이터 저장 로직
+# 2. 구글 드라이브 연결 및 쓰기 권한 설정
 # ==========================================
+# 💡 함수 이름을 바꿔서 서버가 예전 캐시(읽기전용 권한)를 버리게 강제함!
 @st.cache_resource
-def get_drive_service():
+def get_drive_service_v2():
     key_dict = json.loads(st.secrets["GCP_KEY"])
     creds = service_account.Credentials.from_service_account_info(
         key_dict, scopes=['https://www.googleapis.com/auth/drive']
@@ -69,7 +75,7 @@ def get_drive_service():
 @st.cache_data(ttl=60, show_spinner="로딩중...") 
 def load_file_from_drive(file_name, file_type='excel', sheet_name=None, skiprows=0):
     try:
-        service = get_drive_service()
+        service = get_drive_service_v2()
         results = service.files().list(q=f"name='{file_name}' and trashed=false", fields='files(id, name)').execute()
         items = results.get('files', [])
         if not items: return None 
@@ -92,15 +98,26 @@ def load_file_from_drive(file_name, file_type='excel', sheet_name=None, skiprows
     except:
         return None
 
+# 💡 HttpError 완벽 방어: NAS 폴더(부모 폴더) ID를 찾아서 그 안에만 저장!
 def save_manual_leave(emp_id, year, absolute_total):
-    service = get_drive_service()
+    service = get_drive_service_v2()
     file_name = "manual_leave_db.csv"
     
-    results = service.files().list(q=f"name='{file_name}' and trashed=false").execute()
+    # NAS 폴더 위치 찾기
+    try:
+        parent_res = service.files().list(q="name='1. 성진정밀_직원목록.xlsm' and trashed=false", fields='files(parents)').execute()
+        parent_id = parent_res.get('files')[0].get('parents')[0]
+    except:
+        parent_id = None
+
+    # 해당 폴더 안에서 장부 찾기
+    query = f"name='{file_name}' and trashed=false"
+    if parent_id: query += f" and '{parent_id}' in parents"
+        
+    results = service.files().list(q=query, fields='files(id, name)').execute()
     items = results.get('files', [])
     
     if items:
-        file_id = items[0]['id']
         df = load_file_from_drive(file_name, file_type='csv')
     else:
         df = pd.DataFrame(columns=['사번', '연도', '총연차'])
@@ -118,16 +135,18 @@ def save_manual_leave(emp_id, year, absolute_total):
     df.to_csv(csv_buffer, index=False)
     media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode()), mimetype='text/csv')
     
+    # 덮어쓰거나, 폴더 지정해서 새로 만들기
     if items:
         service.files().update(fileId=items[0]['id'], media_body=media).execute()
     else:
         file_metadata = {'name': file_name, 'mimeType': 'text/csv'}
+        if parent_id: file_metadata['parents'] = [parent_id]
         service.files().create(body=file_metadata, media_body=media).execute()
     
-    st.cache_data.clear()
+    st.cache_data.clear() # 저장 후 즉시 반영되도록 캐시 삭제
 
 # ==========================================
-# 3. 🚨 노동법 개정이 반영된 연차 계산 로직
+# 3. 노동법 개정이 반영된 연차 계산 로직
 # ==========================================
 def calculate_annual_leave(join_date_str, target_year):
     join_date = pd.to_datetime(join_date_str)
@@ -135,23 +154,15 @@ def calculate_annual_leave(join_date_str, target_year):
     join_year = join_date.year
     years_employed = target_year - join_year
     
-    # 💡 2017년 5월 29일 이전 입사자 판별 (법 시행일 2018.05.29 기준)
     is_pre_2017_law = join_date < datetime(2017, 5, 30)
     
-    if years_employed < 1: 
-        return 0.0
-        
+    if years_employed < 1: return 0.0
     if years_employed == 1:
         days_in_join_year = (datetime(join_year, 12, 31) - join_date).days + 1
         return round(15 * (days_in_join_year / 365.0), 1)
         
-    # 💡 구법 대상자(2017.05.29 이전)의 2년 차 로직 반영
-    if years_employed == 2 and is_pre_2017_law:
-        # 본래 1년 차 사용분을 차감해야 하지만, 현재 24~26년 조회 중이므로 
-        # 이들이 2년 차(2018년 등)로 조회될 일은 없으므로 기본 15일 적용 후 넘어감.
-        base_leave = 15
-    else:
-        base_leave = 15
+    if years_employed == 2 and is_pre_2017_law: base_leave = 15
+    else: base_leave = 15
         
     bonus_leave = math.floor((years_employed - 1) / 2)
     return min(base_leave + bonus_leave, 25.0)
@@ -178,33 +189,39 @@ def render_user_dashboard(user_row, selected_year, is_admin=False):
                 total_days = float(match.iloc[0]['총연차']) 
         
         remain_days = max(total_days - used_days, 0)
-        
-        if is_admin:
-            st.markdown("<div class='admin-box'>", unsafe_allow_html=True)
-            st.markdown("<div style='font-size: 1.1rem; font-weight: 700; color: #3182f6; margin-bottom: 10px;'>⚙️ 총 연차 강제 지정 (관리자용)</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='font-size: 0.9rem; color: #6b7684; margin-bottom: 10px;'>시스템 자동 계산 결과: {auto_days}일</div>", unsafe_allow_html=True)
-            
-            new_total = st.number_input("이 직원의 올해 총 연차", value=float(total_days), step=0.5, label_visibility="collapsed")
-            if st.button("저장하기", type="primary"):
-                save_manual_leave(user_row['사번'], selected_year, new_total)
-                st.success("총 연차가 성공적으로 저장되었습니다!")
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
         progress = min((used_days / total_days) * 100, 100) if total_days > 0 else 0
-        st.markdown(f"""
-<div class="toss-card">
-    <div class='section-header'>📊 연차 사용 현황</div>
-    <div class="progress-bg"><div class="progress-fill" style="width: {progress}%;"></div></div>
-    <div class="metric-wrapper">
-        <div class="metric-card"><div class="metric-label">총 연차</div><div class="metric-value">{total_days}<span style="font-size:1.0rem;">일</span></div></div>
-        <div class="metric-card"><div class="metric-label">사용</div><div class="metric-value blue">{used_days}<span style="font-size:1.0rem;">일</span></div></div>
-        <div class="metric-card"><div class="metric-label">잔여</div><div class="metric-value">{remain_days}<span style="font-size:1.0rem;">일</span></div></div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
         
-        html_history = f"<div class='toss-card'><div class='section-header'>📂 {selected_year[2:]}년 연차 내역</div>"
+        # 1. 상단 카드 (타이틀 및 프로그레스 바)
+        st.markdown(f"""
+        <div class="toss-card" style="margin-bottom: 5px;">
+            <div class='section-header'>📊 연차 사용 현황</div>
+            <div class="progress-bg"><div class="progress-fill" style="width: {progress}%;"></div></div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 2. 💡 충돌 없이 완벽한 3등분 카드 (Streamlit Native Columns)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("<div class='metric-label'>총 연차</div>", unsafe_allow_html=True)
+            if is_admin:
+                # 관리자면 숫자를 바로 수정할 수 있는 멋진 입력창이 뜸!
+                new_total = st.number_input("edit", value=float(total_days), step=0.5, label_visibility="collapsed", key=f"edit_{user_row['사번']}")
+                if new_total != total_days:
+                    save_manual_leave(user_row['사번'], selected_year, new_total)
+                    st.rerun() # 값이 바뀌면 즉시 저장하고 화면 새로고침
+            else:
+                st.markdown(f"<div class='metric-value'>{total_days}<span style='font-size:1.0rem;'>일</span></div>", unsafe_allow_html=True)
+        
+        with c2:
+            st.markdown("<div class='metric-label'>사용</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='metric-value blue'>{used_days}<span style='font-size:1.0rem;'>일</span></div>", unsafe_allow_html=True)
+        
+        with c3:
+            st.markdown("<div class='metric-label'>잔여</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='metric-value'>{remain_days}<span style='font-size:1.0rem;'>일</span></div>", unsafe_allow_html=True)
+
+        # 3. 상세 내역 카드
+        html_history = f"<div class='toss-card' style='margin-top: 15px;'><div class='section-header'>📂 {selected_year[2:]}년 연차 내역</div>"
         if not my_leaves.empty:
             for _, row in my_leaves.iterrows():
                 l_type = str(row.get('휴가구분', '연차')).replace('소진', '')

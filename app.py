@@ -113,22 +113,29 @@ def save_manual_leave(emp_id, year, absolute_total):
         if items:
             file_id = items[0]['id']
             df = load_file_from_drive(file_name, file_type='csv')
+            
+            # 🛡️ 방탄코드 1: 파일이 완전 비어있거나 꼬여서 None이 반환될 경우 깡통 데이터프레임 생성
+            if df is None or '사번' not in df.columns:
+                df = pd.DataFrame(columns=['사번', '연도', '총연차'])
         else:
             df = pd.DataFrame(columns=['사번', '연도', '총연차'])
 
+        # 🛡️ 방탄코드 2: 에러 안 나게 전부 문자열로 안전하게 변환
         df['사번'] = df['사번'].astype(str).str.zfill(4)
-        mask = (df['사번'] == str(emp_id).zfill(4)) & (df['연도'] == int(year))
+        df['연도'] = df['연도'].astype(str)
+        
+        mask = (df['사번'] == str(emp_id).zfill(4)) & (df['연도'] == str(year))
         
         if not df[mask].empty:
             df.loc[mask, '총연차'] = absolute_total
         else:
-            new_row = pd.DataFrame([{'사번': str(emp_id).zfill(4), '연도': int(year), '총연차': absolute_total}])
+            new_row = pd.DataFrame([{'사번': str(emp_id).zfill(4), '연도': str(year), '총연차': absolute_total}])
             df = pd.concat([df, new_row], ignore_index=True)
         
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer, index=False)
         
-        # 💡 한글 깨짐 방지 utf-8 명시!
+        # 한글 깨짐 방지 utf-8 명시
         media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8')), mimetype='text/csv')
         
         if items:
@@ -138,11 +145,10 @@ def save_manual_leave(emp_id, year, absolute_total):
             service.files().create(body=file_metadata, media_body=media).execute()
         
         st.cache_data.clear()
-        return True # 성공하면 True 반환
+        return True
         
     except Exception as e:
-        # 🚨 Streamlit이 에러를 숨기지 않도록 직접 화면에 띄움!
-        st.error(f"구글 드라이브 저장 실패! 폴더 편집자 권한을 확인해주세요. 상세 에러: {e}")
+        st.error(f"구글 드라이브 저장 실패! 상세 에러: {e}")
         return False
 
 # ==========================================
@@ -178,20 +184,25 @@ def render_user_dashboard(user_row, selected_year, is_admin=False):
         auto_days = calculate_annual_leave(user_row['입사일'], selected_year)
         total_days = auto_days
         
+        # 🛡️ 방탄코드 3: 수동 연차 데이터가 꼬여있어도 에러 안 나게 안전하게 체크
         if df_manual is not None:
-            df_manual['사번'] = df_manual['사번'].astype(str).str.zfill(4)
-            match = df_manual[(df_manual['사번'] == str(user_row['사번']).zfill(4)) & (df_manual['연도'] == int(selected_year))]
-            if not match.empty:
-                total_days = float(match.iloc[0]['총연차']) 
+            try:
+                if '사번' in df_manual.columns and '연도' in df_manual.columns and '총연차' in df_manual.columns:
+                    df_manual['사번'] = df_manual['사번'].astype(str).str.zfill(4)
+                    df_manual['연도'] = df_manual['연도'].astype(str)
+                    
+                    match = df_manual[(df_manual['사번'] == str(user_row['사번']).zfill(4)) & (df_manual['연도'] == str(selected_year))]
+                    if not match.empty:
+                        total_days = float(match.iloc[0]['총연차']) 
+            except Exception:
+                pass # 꼬여있으면 그냥 자동 계산된 total_days 유지
         
         remain_days = max(total_days - used_days, 0)
         progress = min((used_days / total_days) * 100, 100) if total_days > 0 else 0
 
-        # 💡 세션 상태에 '수정 모드' 변수 초기화
         if "edit_leave_mode" not in st.session_state:
             st.session_state.edit_leave_mode = False
 
-        # 👑 관리자가 수정 버튼을 눌렀을 때의 뷰 (입력창으로 변신)
         if is_admin and st.session_state.edit_leave_mode:
             st.markdown("<div class='admin-box'>", unsafe_allow_html=True)
             st.markdown("<div style='font-size: 1.1rem; font-weight: 700; color: #3182f6; margin-bottom: 10px;'>✏️ 총 연차 숫자 직접 수정</div>", unsafe_allow_html=True)
@@ -200,21 +211,18 @@ def render_user_dashboard(user_row, selected_year, is_admin=False):
             new_total = st.number_input("이 직원의 올해 총 연차", value=float(total_days), step=0.5, label_visibility="collapsed")
             
             col1, col2 = st.columns(2)
-            
-            # 🚨 아까 헷갈렸던 부분! 저장 버튼 로직이 바로 여기에 쏙 들어갔어 🚨
             with col1:
                 if st.button("✅ 저장하기", type="primary", use_container_width=True):
                     is_success = save_manual_leave(user_row['사번'], selected_year, new_total)
-                    if is_success: # 에러 없이 구글 드라이브에 저장이 성공했을 때만!
-                        st.session_state.edit_leave_mode = False # 다시 예쁜 카드 뷰로 돌아감
+                    if is_success: 
+                        st.session_state.edit_leave_mode = False 
                         st.rerun()
             with col2:
                 if st.button("❌ 취소", use_container_width=True):
-                    st.session_state.edit_leave_mode = False # 취소해도 카드 뷰로 돌아감
+                    st.session_state.edit_leave_mode = False 
                     st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # 👨‍💻 일반 사용자 뷰 & 관리자 평상시 뷰 (예쁜 토스 카드)
         else:
             st.markdown(f"""
             <div class="toss-card">
@@ -228,10 +236,9 @@ def render_user_dashboard(user_row, selected_year, is_admin=False):
             </div>
             """, unsafe_allow_html=True)
             
-            # 관리자일 때만 예쁜 수정 버튼을 카드 바로 밑에 붙여주기
             if is_admin:
                 if st.button("✏️ 총 연차 숫자 수정하기", use_container_width=True):
-                    st.session_state.edit_leave_mode = True # 클릭 시 위쪽의 입력창 UI로 상태 변경
+                    st.session_state.edit_leave_mode = True 
                     st.rerun()
         
         # --- 연차 내역 출력 ---
@@ -239,7 +246,13 @@ def render_user_dashboard(user_row, selected_year, is_admin=False):
         if not my_leaves.empty:
             for _, row in my_leaves.iterrows():
                 l_type = str(row.get('휴가구분', '연차')).replace('소진', '')
-                l_date = pd.to_datetime(row['연차시작일']).strftime('%Y.%m.%d')
+                
+                # 🛡️ 방탄코드 4: 엑셀 빈 줄 때문에 날짜 변환 에러나는 것 방지
+                try:
+                    l_date = pd.to_datetime(row['연차시작일']).strftime('%Y.%m.%d')
+                except:
+                    l_date = "날짜 표기 오류"
+                    
                 l_days = abs(float(row.get('연차기간', 0)))
                 html_history += f"<div class='history-row'><span class='history-type'>{l_type}</span><span class='history-date'>{l_date}</span><span class='history-days'>{l_days}일</span></div>"
         else:

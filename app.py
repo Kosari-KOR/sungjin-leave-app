@@ -10,7 +10,7 @@ from datetime import datetime
 # 1. 웹앱 기본 설정
 st.set_page_config(page_title="성진정밀 연차관리", page_icon="🏢", layout="centered")
 
-# 2. 구글 드라이브 로봇 접속 (이전과 동일)
+# 2. 구글 드라이브 로봇 접속
 @st.cache_resource
 def get_drive_service():
     key_dict = json.loads(st.secrets["GCP_KEY"])
@@ -19,8 +19,9 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-@st.cache_data(ttl=60) # 1분마다 새로고침 (직원이 입력하면 금방 반영되도록)
-def load_excel_from_drive(file_name, sheet_name, skiprows):
+# 👉 수정됨: usecols 파라미터 추가 및 열 이름의 공백(띄어쓰기) 자동 제거 기능 추가
+@st.cache_data(ttl=60) 
+def load_excel_from_drive(file_name, sheet_name, skiprows, usecols=None):
     service = get_drive_service()
     results = service.files().list(q=f"name='{file_name}' and trashed=false", spaces='drive', fields='files(id, name)').execute()
     items = results.get('files', [])
@@ -34,7 +35,13 @@ def load_excel_from_drive(file_name, sheet_name, skiprows):
     while done is False:
         status, done = downloader.next_chunk()
     fh.seek(0)
-    return pd.read_excel(fh, sheet_name=sheet_name, skiprows=skiprows, engine='openpyxl')
+    
+    # usecols를 써서 딱 필요한 열만 가져오기
+    df = pd.read_excel(fh, sheet_name=sheet_name, skiprows=skiprows, usecols=usecols, engine='openpyxl')
+    
+    # 엑셀 머리글에 실수로 들어간 띄어쓰기 완벽 제거
+    df.columns = df.columns.str.strip() 
+    return df
 
 # 3. 로그인 세션 관리
 if "logged_in" not in st.session_state:
@@ -45,8 +52,8 @@ if "logged_in" not in st.session_state:
 # 🖥️ 화면 구성 시작
 # ==========================================
 
-# 직원 목록 데이터 미리 불러오기
-df_emp = load_excel_from_drive('1. 성진정밀_직원목록.xlsm', sheet_name='사원정보', skiprows=8)
+# 👉 수정됨: B열부터 R열까지만 딱 지정해서 가져오기 (A열 빈칸 무시)
+df_emp = load_excel_from_drive('1. 성진정밀_직원목록.xlsm', sheet_name='사원정보', skiprows=8, usecols="B:R")
 
 # [로그인 화면]
 if not st.session_state.logged_in:
@@ -60,14 +67,15 @@ if not st.session_state.logged_in:
         user_id = st.text_input("사번 (Password)", type="password")
         
         if st.button("로그인"):
-            # 사번을 문자열로 변환하여 정확히 비교
-            df_emp['사번'] = df_emp['사번'].astype(str)
+            # 👉 수정됨: 사번 폭탄 제거! 엑셀에서 '4'로 읽혀도 '0004'처럼 4자리로 강제 변환 (소수점 .0 도 제거)
+            df_emp['사번'] = df_emp['사번'].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(4)
+            user_id_str = str(user_id).zfill(4)
             
             # 입력한 이름과 사번이 일치하는 행 찾기
-            user_match = df_emp[(df_emp['성명'] == user_name) & (df_emp['사번'] == str(user_id))]
+            user_match = df_emp[(df_emp['성명'] == user_name) & (df_emp['사번'] == user_id_str)]
             
             if not user_match.empty:
-                # 퇴사자 필터링 (퇴사일이 비어있거나(NaT) null인 경우만 통과)
+                # 퇴사자 필터링
                 if pd.isna(user_match.iloc[0]['퇴사일']):
                     st.session_state.logged_in = True
                     st.session_state.user_info = user_match.iloc[0]
@@ -81,42 +89,35 @@ if not st.session_state.logged_in:
 else:
     user = st.session_state.user_info
     
-    # 상단 환영 인사
     st.title(f"🎉 환영합니다, {user['성명']} {user['직책']}님!")
     
-    # 입사일 포맷팅
     join_date = pd.to_datetime(user['입사일']).strftime('%Y년 %m월 %d일')
     st.info(f"📅 입사일 : {join_date}")
     
     st.divider()
     
-    # 연도 선택
     current_year = str(datetime.now().year)
     selected_year = st.selectbox("조회할 연도를 선택하세요", ["2026", "2025", "2024"], index=["2026", "2025", "2024"].index(current_year) if current_year in ["2026", "2025", "2024"] else 0)
     
     st.subheader(f"📊 {selected_year}년 연차 사용 현황")
     
-    # 선택한 연도의 연차 데이터 불러오기
     leave_file_name = f"{selected_year} 연차.xlsm"
-    df_leave = load_excel_from_drive(leave_file_name, sheet_name='연차입력', skiprows=14)
+    # 👉 수정됨: 연차 파일도 B열부터 K열까지만 딱 가져오기
+    df_leave = load_excel_from_drive(leave_file_name, sheet_name='연차입력', skiprows=14, usecols="B:K")
     
     if df_leave is not None:
-        # 내 사번(사원번호)과 일치하는 연차 내역만 필터링 (B열: 사원번호)
-        df_leave['사원번호'] = df_leave['사원번호'].astype(str)
-        my_leaves = df_leave[df_leave['사원번호'] == str(user['사번'])]
+        # 내 사원번호 필터링 (여기도 엑셀의 숫자 변환 문제 방어)
+        df_leave['사원번호'] = df_leave['사원번호'].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(4)
+        my_leaves = df_leave[df_leave['사원번호'] == str(user['사번']).zfill(4)]
         
-        # '연차기간' 합산 (K열)
         used_leave = pd.to_numeric(my_leaves['연차기간'], errors='coerce').sum()
         
-        # ⚠️ 총 발생 연차 (임시로 15일 고정, 추후 계산 로직 추가 필요)
         total_leave = 15.0 
         remain_leave = total_leave - used_leave
         
-        # 바 막대 생성 (최대치를 넘지 않도록 제한)
         progress_val = min(used_leave / total_leave, 1.0) if total_leave > 0 else 0
         st.progress(progress_val)
         
-        # 사용/잔여 연차 텍스트 표시
         col1, col2, col3 = st.columns(3)
         col1.metric("총 발생 연차", f"{total_leave} 일")
         col2.metric("사용 연차", f"{used_leave} 일")
@@ -124,12 +125,9 @@ else:
         
         st.divider()
         
-        # 하단 사용 내역 상세 표
         st.subheader("📅 상세 사용 내역")
         if not my_leaves.empty:
-            # 보여줄 열만 선택 (휴가구분, 시작일, 종료일, 기간)
             display_df = my_leaves[['휴가구분', '연차시작일', '연차종료일', '연차기간']].copy()
-            # 날짜 포맷 깔끔하게 변경
             display_df['연차시작일'] = pd.to_datetime(display_df['연차시작일']).dt.strftime('%Y-%m-%d')
             display_df['연차종료일'] = pd.to_datetime(display_df['연차종료일']).dt.strftime('%Y-%m-%d')
             display_df.columns = ['구분', '시작일', '종료일', '사용일수']

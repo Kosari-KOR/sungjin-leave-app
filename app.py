@@ -15,6 +15,24 @@ st.set_page_config(page_title="성진정밀 연차관리", layout="centered", in
 
 st.markdown("""
 <style>
+/* =========================================
+       🚫 Streamlit 기본 UI 완벽 숨기기
+       ========================================= */
+    /* 1. 상단 헤더 숨기기 (Fork 버튼, Deploy 버튼, 햄버거 메뉴 등) */
+    header { visibility: hidden !important; display: none !important; }
+    
+    /* 2. 우측 상단 툴바 숨기기 (Manage app, 점 세개 버튼 등) */
+    [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; }
+    
+    /* 3. 하단 푸터 숨기기 (Hosted with Streamlit 워터마크) */
+    footer { visibility: hidden !important; display: none !important; }
+    
+    /* 4. 우측 하단 플로팅 뱃지 숨기기 (클라우드 전용) */
+    .viewerBadge_container__1QSob { display: none !important; }
+    
+    /* 5. 맨 위쪽에 생기는 무지개색 장식선 숨기기 */
+    [data-testid="stDecoration"] { display: none !important; }
+    
     /* 전체 상단 여백 확 줄이기 */
     .block-container { padding-top: 1.5rem !important; padding-bottom: 1rem !important; }
     

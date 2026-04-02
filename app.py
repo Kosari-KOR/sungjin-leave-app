@@ -102,45 +102,48 @@ def load_file_from_drive(file_name, file_type='excel', sheet_name=None, skiprows
     except:
         return None
 
-# 수동 부여 연차 저장 함수 (CSV 방식)
-def save_manual_leave(emp_id, year, amount):
-    service = get_drive_service()
-    file_name = "manual_leave_db.csv"
-    
-    # 1. 기존 파일 있는지 확인
-    results = service.files().list(q=f"name='{file_name}' and trashed=false").execute()
-    items = results.get('files', [])
-    
-    if items:
-        # 기존 데이터 읽기
-        file_id = items[0]['id']
-        df = load_file_from_drive(file_name, file_type='csv')
-    else:
-        # 새 데이터프레임 생성
-        df = pd.DataFrame(columns=['사번', '연도', '수동부여'])
+def save_manual_leave(emp_id, year, absolute_total):
+    try:
+        service = get_drive_service()
+        file_name = "manual_leave_db.csv"
+        
+        results = service.files().list(q=f"name='{file_name}' and trashed=false").execute()
+        items = results.get('files', [])
+        
+        if items:
+            file_id = items[0]['id']
+            df = load_file_from_drive(file_name, file_type='csv')
+        else:
+            df = pd.DataFrame(columns=['사번', '연도', '총연차'])
 
-    # 2. 데이터 업데이트 또는 추가
-    df['사번'] = df['사번'].astype(str).str.zfill(4)
-    mask = (df['사번'] == str(emp_id).zfill(4)) & (df['연도'] == int(year))
-    
-    if not df[mask].empty:
-        df.loc[mask, '수동부여'] = amount
-    else:
-        new_row = pd.DataFrame([{'사번': str(emp_id).zfill(4), '연도': int(year), '수동부여': amount}])
-        df = pd.concat([df, new_row], ignore_index=True)
-    
-    # 3. 구글 드라이브에 다시 업로드
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
-    media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode()), mimetype='text/csv')
-    
-    if items:
-        service.files().update(fileId=items[0]['id'], media_body=media).execute()
-    else:
-        file_metadata = {'name': file_name, 'mimeType': 'text/csv'}
-        service.files().create(body=file_metadata, media_body=media).execute()
-    
-    st.cache_data.clear() # 캐시 초기화해서 바로 반영되게 함
+        df['사번'] = df['사번'].astype(str).str.zfill(4)
+        mask = (df['사번'] == str(emp_id).zfill(4)) & (df['연도'] == int(year))
+        
+        if not df[mask].empty:
+            df.loc[mask, '총연차'] = absolute_total
+        else:
+            new_row = pd.DataFrame([{'사번': str(emp_id).zfill(4), '연도': int(year), '총연차': absolute_total}])
+            df = pd.concat([df, new_row], ignore_index=True)
+        
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        
+        # 💡 한글 깨짐 방지 utf-8 명시!
+        media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8')), mimetype='text/csv')
+        
+        if items:
+            service.files().update(fileId=items[0]['id'], media_body=media).execute()
+        else:
+            file_metadata = {'name': file_name, 'mimeType': 'text/csv'}
+            service.files().create(body=file_metadata, media_body=media).execute()
+        
+        st.cache_data.clear()
+        return True # 성공하면 True 반환
+        
+    except Exception as e:
+        # 🚨 Streamlit이 에러를 숨기지 않도록 직접 화면에 띄움!
+        st.error(f"구글 드라이브 저장 실패! 폴더 편집자 권한을 확인해주세요. 상세 에러: {e}")
+        return False
 
 # ==========================================
 # 3. 계산 및 렌더링 로직
@@ -197,11 +200,14 @@ def render_user_dashboard(user_row, selected_year, is_admin=False):
             new_total = st.number_input("이 직원의 올해 총 연차", value=float(total_days), step=0.5, label_visibility="collapsed")
             
             col1, col2 = st.columns(2)
+            
+            # 🚨 아까 헷갈렸던 부분! 저장 버튼 로직이 바로 여기에 쏙 들어갔어 🚨
             with col1:
                 if st.button("✅ 저장하기", type="primary", use_container_width=True):
-                    save_manual_leave(user_row['사번'], selected_year, new_total)
-                    st.session_state.edit_leave_mode = False # 저장 후 다시 카드 뷰로 돌아감
-                    st.rerun()
+                    is_success = save_manual_leave(user_row['사번'], selected_year, new_total)
+                    if is_success: # 에러 없이 구글 드라이브에 저장이 성공했을 때만!
+                        st.session_state.edit_leave_mode = False # 다시 예쁜 카드 뷰로 돌아감
+                        st.rerun()
             with col2:
                 if st.button("❌ 취소", use_container_width=True):
                     st.session_state.edit_leave_mode = False # 취소해도 카드 뷰로 돌아감
@@ -240,7 +246,7 @@ def render_user_dashboard(user_row, selected_year, is_admin=False):
             html_history += "<div style='text-align:center; padding:20px; color:#8b95a1; font-size:1rem;'>내역이 없습니다.</div>"
         html_history += "</div>"
         st.markdown(html_history, unsafe_allow_html=True)
-
+        
 # ==========================================
 # 4. 앱 메인 로직
 # ==========================================

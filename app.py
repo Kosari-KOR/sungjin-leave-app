@@ -111,32 +111,42 @@ def save_manual_leave(emp_id, year, absolute_total):
         items = results.get('files', [])
         
         if items:
-            file_id = items[0]['id']
             df = load_file_from_drive(file_name, file_type='csv')
             
-            # 🛡️ 방탄코드 1: 파일이 완전 비어있거나 꼬여서 None이 반환될 경우 깡통 데이터프레임 생성
-            if df is None or '사번' not in df.columns:
+            # 🛡️ [추가] 헤더가 꼬였을 때를 대비한 자동 복구 로직
+            if df is None or df.empty:
                 df = pd.DataFrame(columns=['사번', '연도', '총연차'])
+            else:
+                # '년도'라고 되어 있으면 '연도'로 이름 변경
+                if '년도' in df.columns and '연도' not in df.columns:
+                    df = df.rename(columns={'년도': '연도'})
+                # 필요한 컬럼이 하나라도 없으면 강제로 생성
+                for col in ['사번', '연도', '총연차']:
+                    if col not in df.columns:
+                        df[col] = None
         else:
             df = pd.DataFrame(columns=['사번', '연도', '총연차'])
 
-        # 🛡️ 방탄코드 2: 에러 안 나게 전부 문자열로 안전하게 변환
-        df['사번'] = df['사번'].astype(str).str.zfill(4)
-        df['연도'] = df['연도'].astype(str)
+        # 모든 데이터를 안전하게 문자열/숫자로 변환
+        df['사번'] = df['사번'].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(4)
+        df['연도'] = df['연도'].astype(str).str.replace(r'\.0$', '', regex=True)
         
-        mask = (df['사번'] == str(emp_id).zfill(4)) & (df['연도'] == str(year))
+        target_emp_id = str(emp_id).zfill(4)
+        target_year = str(year)
+        
+        # 기존 데이터가 있는지 확인하고 업데이트 또는 추가
+        mask = (df['사번'] == target_emp_id) & (df['연도'] == target_year)
         
         if not df[mask].empty:
             df.loc[mask, '총연차'] = absolute_total
         else:
-            new_row = pd.DataFrame([{'사번': str(emp_id).zfill(4), '연도': str(year), '총연차': absolute_total}])
+            new_row = pd.DataFrame([{'사번': target_emp_id, '연도': target_year, '총연차': absolute_total}])
             df = pd.concat([df, new_row], ignore_index=True)
         
+        # 드라이브에 저장 (UTF-8 인코딩)
         csv_buffer = io.StringIO()
-        df.to_csv(csv_buffer, index=False)
-        
-        # 한글 깨짐 방지 utf-8 명시
-        media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8')), mimetype='text/csv')
+        df.to_csv(csv_buffer, index=False, encoding='utf-8-sig') # 엑셀에서도 잘 보이게 sig 추가
+        media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8-sig')), mimetype='text/csv')
         
         if items:
             service.files().update(fileId=items[0]['id'], media_body=media).execute()
@@ -148,7 +158,7 @@ def save_manual_leave(emp_id, year, absolute_total):
         return True
         
     except Exception as e:
-        st.error(f"구글 드라이브 저장 실패! 상세 에러: {e}")
+        st.error(f"구글 드라이브 저장 실패! 관리자에게 문의하세요. (에러: {e})")
         return False
 
 # ==========================================
